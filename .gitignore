@@ -1,0 +1,24 @@
+# 数据文件（Excel）
+*.xlsx
+*.xls
+
+# 临时文件
+~$*
+*.tmp
+*.bak
+
+# IDE配置
+.idea/
+.vscode/
+*.pyc
+__pycache__/
+
+# 数据文件夹
+待处理的数据/
+储存的原始数据（命名方式为fluid_D0_U0）/
+导出（经过figure）的数据用于origin绘图/
+滤波或者无量纲化后的一些单独数据（命名方式为fluid_D0_U0_123）/
+picture/
+
+# Claude配置（可选保留）
+# .claude/
