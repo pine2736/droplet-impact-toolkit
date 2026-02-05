@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-峰值分析工具（双滤波）- 增强版 v3.2
-优化右侧功能区布局，避免左右滚动
+峰值分析工具（双滤波）- 增强版 v3.4
+界面优化：文件选择功能移至右侧功能区，移除顶部工具栏
 """
 
 import os
@@ -16,7 +16,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from PySide6.QtCore import Qt, QTimer, QPoint, Signal
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QRadioButton,
+    QLabel, QLineEdit, QPushButton, QRadioButton, QCheckBox,
     QGroupBox, QFileDialog, QMessageBox, QSplitter,
     QGridLayout, QScrollArea, QSizePolicy, QComboBox,
     QDoubleSpinBox, QSpinBox, QFrame
@@ -71,7 +71,7 @@ FLUID_PARAMS = {
 class Params:
     """基本参数"""
     SIGMA: float = 5.0
-    FIR_FC: float = 3000.0
+    FIR_FC: float = 2000.0
     PRE_TIME: float = 0.005
     POST_TIME: float = 0.015
     STEP: float = 0.00001
@@ -317,6 +317,20 @@ class PeakAnalysisTool(QMainWindow):
         # 无量纲曲线图的顶部坐标轴引用
         self.ax_dimensionless_top = None
 
+        # 对比曲线存储列表
+        self.compare_curves = []  # 存储格式: [{"label": str, "t_rho": array, "F_star": array}, ...]
+
+        # 文件夹选择相关变量
+        self.data_folder = ""           # 数据文件夹路径
+        self.all_files = []             # 文件夹中所有CSV文件列表
+        self.file_index = {}            # 按流体类型和速度索引的文件字典
+        # 结构: {fluid_type: {velocity: [file1, file2, ...]}}
+        self.current_fluid_type = ""    # 当前选择的流体类型
+        self.current_velocity = ""      # 当前选择的速度
+        self.current_file_list = []     # 当前流体类型+速度下的文件列表
+        self.current_file_idx = 0       # 当前文件在列表中的索引
+        self.current_file_path = ""     # 当前加载的文件路径
+
         # 初始化UI
         self.init_ui()
 
@@ -325,7 +339,7 @@ class PeakAnalysisTool(QMainWindow):
 
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle('峰值分析工具（双滤波）- 增强版 v3.2')
+        self.setWindowTitle('峰值分析工具（双滤波）- 增强版 v3.3')
         self.setGeometry(100, 100, 1600, 1000)
 
         # 设置样式
@@ -405,32 +419,6 @@ class PeakAnalysisTool(QMainWindow):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
 
-        # 顶部工具栏
-        top_toolbar = QWidget()
-        top_layout = QHBoxLayout(top_toolbar)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(6)
-
-        # 文件操作
-        self.file_label = QLabel("数据文件:")
-        self.file_edit = QLineEdit(self.params.INIT_FILE)
-        self.file_edit.setMinimumWidth(400)
-        self.browse_btn = QPushButton("浏览")
-        self.browse_btn.clicked.connect(self.browse_file)
-        self.load_btn = QPushButton("加载数据")
-        self.load_btn.clicked.connect(self.load_data_wrapper)
-        self.next_btn = QPushButton("下一个文件")
-        self.next_btn.clicked.connect(self.load_next_file)
-
-        top_layout.addWidget(self.file_label)
-        top_layout.addWidget(self.file_edit)
-        top_layout.addWidget(self.browse_btn)
-        top_layout.addWidget(self.load_btn)
-        top_layout.addWidget(self.next_btn)
-        top_layout.addStretch()
-
-        main_layout.addWidget(top_toolbar)
-
         # 分割器：左侧图表，右侧控制
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter, 1)
@@ -454,8 +442,10 @@ class PeakAnalysisTool(QMainWindow):
         self.ax_calib = self.fig.add_subplot(gs[1, 0])
         self.ax_calib_smooth = self.fig.add_subplot(gs[1, 1])
 
-        # 无量纲曲线图占据第三行整行
-        self.ax_dimensionless = self.fig.add_subplot(gs[2, :])  # 占据第三行两列
+        # 无量纲曲线图占据第三行左列
+        self.ax_dimensionless = self.fig.add_subplot(gs[2, 0])
+        # 对比曲线图占据第三行右列
+        self.ax_compare = self.fig.add_subplot(gs[2, 1])
 
         # 设置子图标题和标签
         self.configure_axes(self.ax_raw, "原始数据曲线", "时间 (s)", "电压 (V)")
@@ -469,6 +459,13 @@ class PeakAnalysisTool(QMainWindow):
         self.ax_dimensionless.set_ylabel("F*", fontsize=9, labelpad=8)
         self.ax_dimensionless.grid(True, alpha=0.3)
         self.ax_dimensionless.tick_params(labelsize=8)
+
+        # 配置对比曲线图
+        self.ax_compare.set_title("对比曲线", fontsize=10, pad=12)
+        self.ax_compare.set_xlabel("t/τρ", fontsize=9, labelpad=8)
+        self.ax_compare.set_ylabel("F*", fontsize=9, labelpad=8)
+        self.ax_compare.grid(True, alpha=0.3)
+        self.ax_compare.tick_params(labelsize=8)
 
         # 调整布局
         self.fig.tight_layout()
@@ -500,6 +497,54 @@ class PeakAnalysisTool(QMainWindow):
 
         # 设置右侧部件的尺寸策略
         right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # ========== 文件选择区域（紧凑布局） ==========
+        file_select_group = QGroupBox("文件选择")
+        file_select_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        file_select_layout = QGridLayout()
+        file_select_layout.setHorizontalSpacing(6)
+        file_select_layout.setVerticalSpacing(4)
+        file_select_layout.setContentsMargins(8, 8, 8, 8)
+
+        # 第一行：选择文件夹按钮 + 路径显示
+        self.browse_folder_btn = QPushButton("选择文件夹")
+        self.browse_folder_btn.clicked.connect(self.browse_folder)
+        self.browse_folder_btn.setMaximumWidth(80)
+        self.folder_edit = QLineEdit()
+        self.folder_edit.setReadOnly(True)
+        self.folder_edit.setPlaceholderText("请选择数据文件夹...")
+        file_select_layout.addWidget(self.browse_folder_btn, 0, 0)
+        file_select_layout.addWidget(self.folder_edit, 0, 1, 1, 3)
+
+        # 第二行：流体类型 + 速度（同一行）
+        self.fluid_select_label = QLabel("流体:")
+        self.fluid_select_combo = QComboBox()
+        self.fluid_select_combo.currentTextChanged.connect(self.on_fluid_type_changed)
+        self.fluid_select_combo.setEnabled(False)
+        self.velocity_select_label = QLabel("速度:")
+        self.velocity_select_combo = QComboBox()
+        self.velocity_select_combo.currentTextChanged.connect(self.on_velocity_changed)
+        self.velocity_select_combo.setEnabled(False)
+        file_select_layout.addWidget(self.fluid_select_label, 1, 0)
+        file_select_layout.addWidget(self.fluid_select_combo, 1, 1)
+        file_select_layout.addWidget(self.velocity_select_label, 1, 2)
+        file_select_layout.addWidget(self.velocity_select_combo, 1, 3)
+
+        # 第三行：文件导航
+        self.prev_btn = QPushButton("◀ 上一个")
+        self.prev_btn.clicked.connect(self.load_prev_file)
+        self.prev_btn.setEnabled(False)
+        self.next_btn = QPushButton("下一个 ▶")
+        self.next_btn.clicked.connect(self.load_next_file)
+        self.next_btn.setEnabled(False)
+        self.file_info_label = QLabel("")
+        self.file_info_label.setStyleSheet("color: #0066cc; font-weight: bold;")
+        file_select_layout.addWidget(self.prev_btn, 2, 0, 1, 2)
+        file_select_layout.addWidget(self.next_btn, 2, 2, 1, 2)
+        file_select_layout.addWidget(self.file_info_label, 3, 0, 1, 4)
+
+        file_select_group.setLayout(file_select_layout)
+        right_layout.addWidget(file_select_group)
 
         # ========== 滤波设置区域 ==========
         filter_group = QGroupBox("滤波设置")
@@ -893,6 +938,50 @@ class PeakAnalysisTool(QMainWindow):
         results_group.setLayout(results_layout)
         right_layout.addWidget(results_group)
 
+        # ========== 曲线对比区域 ==========
+        compare_group = QGroupBox("曲线对比")
+        compare_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        compare_layout = QVBoxLayout()
+        compare_layout.setSpacing(6)
+        compare_layout.setContentsMargins(8, 10, 8, 10)
+
+        # 按钮行
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        self.add_compare_btn = QPushButton("添加")
+        self.add_compare_btn.clicked.connect(self.add_to_compare)
+        self.export_compare_btn = QPushButton("导出")
+        self.export_compare_btn.clicked.connect(self.export_compare_data)
+        self.clear_compare_btn = QPushButton("清空")
+        self.clear_compare_btn.clicked.connect(self.clear_compare)
+        btn_row.addWidget(self.add_compare_btn)
+        btn_row.addWidget(self.export_compare_btn)
+        btn_row.addWidget(self.clear_compare_btn)
+        compare_layout.addLayout(btn_row)
+
+        # 曲线列表区域（使用QScrollArea）
+        self.curve_list_scroll = QScrollArea()
+        self.curve_list_scroll.setWidgetResizable(True)
+        self.curve_list_scroll.setMaximumHeight(120)
+        self.curve_list_scroll.setMinimumHeight(60)
+        self.curve_list_scroll.setStyleSheet("QScrollArea { border: 1px solid #ccc; }")
+
+        self.curve_list_widget = QWidget()
+        self.curve_list_layout = QVBoxLayout(self.curve_list_widget)
+        self.curve_list_layout.setSpacing(2)
+        self.curve_list_layout.setContentsMargins(4, 4, 4, 4)
+        self.curve_list_layout.addStretch()
+
+        self.curve_list_scroll.setWidget(self.curve_list_widget)
+        compare_layout.addWidget(self.curve_list_scroll)
+
+        self.compare_count_label = QLabel("已添加: 0 条曲线")
+        self.compare_count_label.setStyleSheet("color: #666666; font-size: 8pt;")
+        compare_layout.addWidget(self.compare_count_label)
+
+        compare_group.setLayout(compare_layout)
+        right_layout.addWidget(compare_group)
+
         # ========== 操作按钮区域 ==========
         buttons_group = QGroupBox("操作")
         buttons_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -932,19 +1021,156 @@ class PeakAnalysisTool(QMainWindow):
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=8)
 
-    def browse_file(self):
-        """浏览文件"""
+    def browse_folder(self):
+        """选择数据文件夹"""
         try:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "选择数据文件",
-                os.path.dirname(self.file_edit.text()) if os.path.exists(self.file_edit.text()) else "",
-                "CSV文件 (*.csv);;所有文件 (*.*)"
+            folder_path = QFileDialog.getExistingDirectory(
+                self, "选择数据文件夹",
+                self.data_folder if self.data_folder else ""
             )
-            if file_path:
-                self.file_edit.setText(file_path)
-                self.load_data(file_path)
+            if folder_path:
+                self.data_folder = folder_path
+                self.folder_edit.setText(folder_path)
+                self.scan_folder(folder_path)
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"浏览文件失败:\n{str(e)}")
+            QMessageBox.critical(self, "错误", f"选择文件夹失败:\n{str(e)}")
+
+    def scan_folder(self, folder_path):
+        """扫描文件夹并构建文件索引"""
+        try:
+            # 清空现有数据
+            self.all_files = []
+            self.file_index = {}
+            self.current_file_list = []
+            self.current_file_idx = 0
+
+            # 扫描CSV文件
+            csv_files = [f for f in os.listdir(folder_path) if f.lower().endswith('.csv')]
+            if not csv_files:
+                QMessageBox.warning(self, "提示", "所选文件夹中没有CSV文件")
+                self.fluid_select_combo.clear()
+                self.velocity_select_combo.clear()
+                self.fluid_select_combo.setEnabled(False)
+                self.velocity_select_combo.setEnabled(False)
+                return
+
+            self.all_files = csv_files
+
+            # 解析文件名并构建索引
+            for filename in csv_files:
+                fluid_name, D0, U0 = extract_params_from_filename(filename)
+                if fluid_name == "Unknown" or np.isnan(U0):
+                    continue
+
+                # 使用速度作为字符串键（保留原始精度）
+                velocity_str = f"{U0:.2f}"
+
+                if fluid_name not in self.file_index:
+                    self.file_index[fluid_name] = {}
+
+                if velocity_str not in self.file_index[fluid_name]:
+                    self.file_index[fluid_name][velocity_str] = []
+
+                self.file_index[fluid_name][velocity_str].append(filename)
+
+            # 对每个速度下的文件列表排序
+            for fluid in self.file_index:
+                for velocity in self.file_index[fluid]:
+                    self.file_index[fluid][velocity].sort()
+
+            # 更新流体类型下拉框
+            self.fluid_select_combo.blockSignals(True)
+            self.fluid_select_combo.clear()
+            fluid_types = sorted(self.file_index.keys())
+            self.fluid_select_combo.addItems(fluid_types)
+            self.fluid_select_combo.blockSignals(False)
+            self.fluid_select_combo.setEnabled(True)
+
+            # 清空速度下拉框
+            self.velocity_select_combo.blockSignals(True)
+            self.velocity_select_combo.clear()
+            self.velocity_select_combo.blockSignals(False)
+            self.velocity_select_combo.setEnabled(False)
+
+            # 禁用导航按钮
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            self.file_info_label.setText("")
+
+            self.statusBar().showMessage(f"已扫描文件夹，找到 {len(csv_files)} 个CSV文件，{len(fluid_types)} 种流体类型")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"扫描文件夹失败:\n{str(e)}")
+
+    def on_fluid_type_changed(self, fluid_type):
+        """流体类型选择变化处理"""
+        if not fluid_type or fluid_type not in self.file_index:
+            return
+
+        try:
+            self.current_fluid_type = fluid_type
+
+            # 更新速度下拉框
+            self.velocity_select_combo.blockSignals(True)
+            self.velocity_select_combo.clear()
+
+            velocities = sorted(self.file_index[fluid_type].keys(), key=lambda x: float(x))
+            self.velocity_select_combo.addItems(velocities)
+
+            self.velocity_select_combo.blockSignals(False)
+            self.velocity_select_combo.setEnabled(True)
+
+            # 清空当前文件列表
+            self.current_file_list = []
+            self.current_file_idx = 0
+            self.current_velocity = ""
+
+            # 禁用导航按钮
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            self.file_info_label.setText("")
+
+            self.statusBar().showMessage(f"已选择流体类型: {fluid_type}，请选择速度")
+
+        except Exception as e:
+            print(f"流体类型变化处理出错: {e}")
+
+    def on_velocity_changed(self, velocity):
+        """速度选择变化处理"""
+        if not velocity or not self.current_fluid_type:
+            return
+
+        try:
+            self.current_velocity = velocity
+
+            # 获取当前流体类型和速度下的文件列表
+            if self.current_fluid_type in self.file_index and velocity in self.file_index[self.current_fluid_type]:
+                self.current_file_list = self.file_index[self.current_fluid_type][velocity]
+                self.current_file_idx = 0
+
+                # 更新导航按钮状态
+                self.update_nav_buttons()
+
+                # 加载第一个文件
+                if self.current_file_list:
+                    file_path = os.path.join(self.data_folder, self.current_file_list[0])
+                    self.load_data(file_path)
+
+        except Exception as e:
+            print(f"速度变化处理出错: {e}")
+
+    def update_nav_buttons(self):
+        """更新导航按钮状态"""
+        file_count = len(self.current_file_list)
+
+        if file_count == 0:
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            self.file_info_label.setText("")
+        else:
+            self.prev_btn.setEnabled(self.current_file_idx > 0)
+            self.next_btn.setEnabled(self.current_file_idx < file_count - 1)
+            self.file_info_label.setText(f"{self.current_file_idx + 1}/{file_count}")
 
     def update_fluid_params(self, fluid_name):
         """更新流体参数"""
@@ -963,13 +1189,8 @@ class PeakAnalysisTool(QMainWindow):
             print(f"更新流体参数出错: {e}")
 
     def load_data_wrapper(self):
-        """包装加载数据函数"""
-        try:
-            file_path = self.file_edit.text().strip()
-            if file_path:
-                self.load_data(file_path)
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"加载数据失败:\n{str(e)}")
+        """包装加载数据函数（保留兼容性）"""
+        pass
 
     def schedule_update(self):
         """延迟更新图表"""
@@ -999,6 +1220,7 @@ class PeakAnalysisTool(QMainWindow):
                 return
 
             file_path = clean_file_path(file_path)
+            self.current_file_path = file_path
 
             # 从文件名提取参数
             fluid_name, D0_extracted, U0_extracted = extract_params_from_filename(file_path)
@@ -1072,6 +1294,9 @@ class PeakAnalysisTool(QMainWindow):
             # 关闭放大窗口
             self.close_magnifier()
 
+            # 更新导航按钮状态
+            self.update_nav_buttons()
+
             # 更新图表
             QTimer.singleShot(100, self.update_all_plots)
 
@@ -1080,33 +1305,30 @@ class PeakAnalysisTool(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "加载失败", f"错误: {str(e)}")
 
+    def load_prev_file(self):
+        """加载上一个文件"""
+        try:
+            if not self.current_file_list or self.current_file_idx <= 0:
+                self.statusBar().showMessage("已经是第一个文件")
+                return
+
+            self.current_file_idx -= 1
+            file_path = os.path.join(self.data_folder, self.current_file_list[self.current_file_idx])
+            self.load_data(file_path)
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载上一个文件失败: {str(e)}")
+
     def load_next_file(self):
         """加载下一个文件"""
         try:
-            current_path = clean_file_path(self.file_edit.text())
-            folder = os.path.dirname(current_path)
-            if not folder or not os.path.exists(folder):
-                QMessageBox.warning(self, "提示", "当前文件夹不存在")
+            if not self.current_file_list or self.current_file_idx >= len(self.current_file_list) - 1:
+                self.statusBar().showMessage("已经是最后一个文件")
                 return
 
-            csv_files = [f for f in os.listdir(folder) if f.lower().endswith('.csv')]
-            if not csv_files:
-                QMessageBox.warning(self, "提示", "当前文件夹中没有CSV文件")
-                return
-
-            csv_files.sort()
-            current_file = os.path.basename(current_path)
-
-            try:
-                current_idx = csv_files.index(current_file)
-                if current_idx < len(csv_files) - 1:
-                    next_file = os.path.join(folder, csv_files[current_idx + 1])
-                    self.file_edit.setText(next_file)
-                    self.load_data(next_file)
-                else:
-                    QMessageBox.information(self, "提示", "已经是最后一个文件")
-            except ValueError:
-                QMessageBox.warning(self, "提示", "当前文件不在列表中")
+            self.current_file_idx += 1
+            file_path = os.path.join(self.data_folder, self.current_file_list[self.current_file_idx])
+            self.load_data(file_path)
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载下一个文件失败: {str(e)}")
@@ -2089,9 +2311,10 @@ class PeakAnalysisTool(QMainWindow):
                 return
 
             # 默认导出到当前文件所在目录
-            current_file = self.file_edit.text().strip()
-            if current_file and os.path.exists(os.path.dirname(current_file)):
-                default_dir = os.path.dirname(current_file)
+            if self.data_folder and os.path.exists(self.data_folder):
+                default_dir = self.data_folder
+            elif self.current_file_path and os.path.exists(os.path.dirname(self.current_file_path)):
+                default_dir = os.path.dirname(self.current_file_path)
             else:
                 default_dir = os.getcwd()
             excel_path = os.path.join(default_dir, "韦伯数-无量纲力&时间汇总.xlsx")
@@ -2145,6 +2368,230 @@ class PeakAnalysisTool(QMainWindow):
         self.peak2_trho_edit.clear()
         self.peak2_tgamma_edit.clear()
         self.peak2_fstar_edit.clear()
+
+    # ========== 曲线对比功能 ==========
+    def add_to_compare(self):
+        """将当前标定曲线添加到对比图"""
+        if self.calib_data is None:
+            QMessageBox.warning(self, "警告", "请先完成曲线标定")
+            return
+
+        # 生成图例标签：流体类型_直径_速度_序号
+        label = f"{self.current_fluid_type}_{self.D0}_{self.U0}_{len(self.compare_curves)+1}"
+
+        # 存储曲线数据（包含visible字段）
+        self.compare_curves.append({
+            "label": label,
+            "t_rho": self.calib_data.t_rho.copy(),
+            "F_star": self.calib_data.F_star.copy(),
+            "visible": True
+        })
+
+        # 更新曲线列表UI、对比图和计数标签
+        self.update_curve_list_ui()
+        self.update_compare_plot()
+        self.compare_count_label.setText(f"已添加: {len(self.compare_curves)} 条曲线")
+        self.statusBar().showMessage(f"已添加曲线: {label}")
+
+    def update_compare_plot(self):
+        """更新对比曲线图"""
+        self.ax_compare.clear()
+        self.ax_compare.set_title("对比曲线", fontsize=10, pad=12)
+        self.ax_compare.set_xlabel("t/τρ", fontsize=9, labelpad=8)
+        self.ax_compare.set_ylabel("F*", fontsize=9, labelpad=8)
+        self.ax_compare.grid(True, alpha=0.3)
+        self.ax_compare.tick_params(labelsize=8)
+
+        # 只绑定可见的曲线
+        has_visible = False
+        for curve in self.compare_curves:
+            if curve.get("visible", True):
+                self.ax_compare.plot(curve["t_rho"], curve["F_star"],
+                                    linewidth=1.2, label=curve["label"])
+                has_visible = True
+
+        if has_visible:
+            self.ax_compare.legend(fontsize=7, loc='best')
+
+        self.canvas.draw_idle()
+
+    def clear_compare(self):
+        """清空对比曲线"""
+        self.compare_curves.clear()
+        self.update_curve_list_ui()
+        self.update_compare_plot()
+        self.compare_count_label.setText("已添加: 0 条曲线")
+        self.statusBar().showMessage("已清空对比图")
+
+    def update_curve_list_ui(self):
+        """刷新曲线列表UI"""
+        # 清空现有列表项（保留stretch）
+        while self.curve_list_layout.count() > 1:
+            item = self.curve_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # 为每条曲线创建一行控件
+        curve_count = len(self.compare_curves)
+        for idx, curve in enumerate(self.compare_curves):
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            # 复选框（显示/隐藏）
+            checkbox = QCheckBox(curve["label"])
+            checkbox.setChecked(curve.get("visible", True))
+            checkbox.setStyleSheet("font-size: 8pt;")
+            checkbox.stateChanged.connect(lambda state, i=idx: self.toggle_curve_visibility(i, state))
+            row_layout.addWidget(checkbox, 1)
+
+            # 上移按钮
+            up_btn = QPushButton("↑")
+            up_btn.setFixedSize(20, 20)
+            up_btn.setStyleSheet("font-size: 10pt;")
+            up_btn.clicked.connect(lambda checked, i=idx: self.move_curve_up(i))
+            up_btn.setEnabled(idx > 0)  # 第一条曲线禁用上移
+            row_layout.addWidget(up_btn)
+
+            # 下移按钮
+            down_btn = QPushButton("↓")
+            down_btn.setFixedSize(20, 20)
+            down_btn.setStyleSheet("font-size: 10pt;")
+            down_btn.clicked.connect(lambda checked, i=idx: self.move_curve_down(i))
+            down_btn.setEnabled(idx < curve_count - 1)  # 最后一条曲线禁用下移
+            row_layout.addWidget(down_btn)
+
+            # 删除按钮
+            del_btn = QPushButton("×")
+            del_btn.setFixedSize(20, 20)
+            del_btn.setStyleSheet("font-size: 10pt; font-weight: bold; color: #c00;")
+            del_btn.clicked.connect(lambda checked, i=idx: self.remove_curve(i))
+            row_layout.addWidget(del_btn)
+
+            self.curve_list_layout.insertWidget(idx, row_widget)
+
+    def toggle_curve_visibility(self, index, state):
+        """切换指定曲线的可见性"""
+        if 0 <= index < len(self.compare_curves):
+            # state: 0=Qt.Unchecked, 2=Qt.Checked
+            self.compare_curves[index]["visible"] = (state == 2)
+            self.update_compare_plot()
+
+    def move_curve_up(self, index):
+        """将曲线上移一位"""
+        if index > 0 and index < len(self.compare_curves):
+            # 交换位置
+            self.compare_curves[index], self.compare_curves[index-1] = \
+                self.compare_curves[index-1], self.compare_curves[index]
+            self.update_curve_list_ui()
+            self.update_compare_plot()
+
+    def move_curve_down(self, index):
+        """将曲线下移一位"""
+        if index >= 0 and index < len(self.compare_curves) - 1:
+            # 交换位置
+            self.compare_curves[index], self.compare_curves[index+1] = \
+                self.compare_curves[index+1], self.compare_curves[index]
+            self.update_curve_list_ui()
+            self.update_compare_plot()
+
+    def remove_curve(self, index):
+        """删除指定曲线"""
+        if 0 <= index < len(self.compare_curves):
+            removed_label = self.compare_curves[index]["label"]
+            del self.compare_curves[index]
+            self.update_curve_list_ui()
+            self.update_compare_plot()
+            self.compare_count_label.setText(f"已添加: {len(self.compare_curves)} 条曲线")
+            self.statusBar().showMessage(f"已删除曲线: {removed_label}")
+
+    def export_compare_data(self):
+        """导出对比图数据到Excel"""
+        if not self.compare_curves:
+            QMessageBox.warning(self, "警告", "对比图中没有曲线数据")
+            return
+
+        if not OPENPYXL_AVAILABLE:
+            QMessageBox.warning(self, "警告", "openpyxl未安装，无法导出Excel")
+            return
+
+        # 选择保存路径
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出对比数据",
+            os.path.join(self.data_folder or "", "compare_data.xlsx") if self.data_folder else "compare_data.xlsx",
+            "Excel文件 (*.xlsx)"
+        )
+        if not file_path:
+            return
+
+        try:
+            workbook = Workbook()
+
+            # Sheet 1: 原始数据（不插值）
+            ws1 = workbook.active
+            ws1.title = "原始数据"
+
+            # 构建表头：每条曲线两列
+            header1 = []
+            for curve in self.compare_curves:
+                header1.extend([f"t/τρ_{curve['label']}", f"F*_{curve['label']}"])
+            ws1.append(header1)
+
+            # 找出最长的曲线
+            max_len = max(len(curve["t_rho"]) for curve in self.compare_curves)
+
+            # 写入数据
+            for i in range(max_len):
+                row = []
+                for curve in self.compare_curves:
+                    if i < len(curve["t_rho"]):
+                        row.extend([curve["t_rho"][i], curve["F_star"][i]])
+                    else:
+                        row.extend(["", ""])
+                ws1.append(row)
+
+            # Sheet 2: 插值对齐数据
+            ws2 = workbook.create_sheet("插值对齐数据")
+
+            # 找出完整时间范围（并集而非交集）
+            t_min = min(curve["t_rho"].min() for curve in self.compare_curves)  # 取最小的最小值
+            t_max = max(curve["t_rho"].max() for curve in self.compare_curves)  # 取最大的最大值
+
+            # 生成统一时间轴
+            # 计算合适的点数：基于最密集曲线的密度
+            densities = [(len(curve["t_rho"]) - 1) / (curve["t_rho"].max() - curve["t_rho"].min())
+                         for curve in self.compare_curves]
+            max_density = max(densities)
+            num_points = int((t_max - t_min) * max_density) + 1
+            common_t = np.linspace(t_min, t_max, num_points)
+
+            # 构建表头
+            header2 = ["t/τρ"] + [f"F*_{curve['label']}" for curve in self.compare_curves]
+            ws2.append(header2)
+
+            # 对每条曲线进行线性插值
+            interpolated_data = []
+            for curve in self.compare_curves:
+                if SCIPY_AVAILABLE:
+                    interp_func = interp1d(curve["t_rho"], curve["F_star"],
+                                          kind='linear', bounds_error=False, fill_value=np.nan)
+                    interpolated_data.append(interp_func(common_t))
+                else:
+                    # 使用numpy插值
+                    interpolated_data.append(np.interp(common_t, curve["t_rho"], curve["F_star"]))
+
+            # 写入数据
+            for i, t in enumerate(common_t):
+                row = [t] + [data[i] if not np.isnan(data[i]) else "" for data in interpolated_data]
+                ws2.append(row)
+
+            workbook.save(file_path)
+            self.statusBar().showMessage(f"已导出对比数据: {file_path}")
+            QMessageBox.information(self, "成功", f"对比数据已导出到:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败:\n{str(e)}")
 
 
 # ========== 主程序 ==========

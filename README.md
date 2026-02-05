@@ -266,4 +266,13 @@ A: 确保6个参数（rho_old, sigma_old, d_old_mm, rho_new, sigma_new, d_new_mm
 
 - droplet_diameter_tool.py: Manual + Timeline + Overlay
 - figure_tool.py: Plotly + Dash + Non-dimensional Correction
-- peak_analysis_tool.py: v3.2 (双滤波增强版)
+- peak_analysis_tool.py: v3.3 (双滤波增强版)
+
+### 更新日志
+
+#### v3.3 (2026-02-06)
+- **修复**: 批量导出对比数据时X轴范围截断问题
+  - 原逻辑取所有曲线时间范围的**交集**，导致边界较长的曲线数据被截断
+  - 现改为取**并集**，完整保留所有曲线的原始范围
+  - 超出某条曲线范围的Y值自动填充为空值
+  - 优化插值点数计算，基于最密集曲线的密度确保分辨率
