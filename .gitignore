@@ -20,5 +20,5 @@ __pycache__/
 滤波或者无量纲化后的一些单独数据（命名方式为fluid_D0_U0_123）/
 picture/
 
-# Claude配置（可选保留）
-# .claude/
+# Claude配置
+.claude/

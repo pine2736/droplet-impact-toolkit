@@ -266,9 +266,15 @@ A: 确保6个参数（rho_old, sigma_old, d_old_mm, rho_new, sigma_new, d_new_mm
 
 - droplet_diameter_tool.py: Manual + Timeline + Overlay
 - figure_tool.py: Plotly + Dash + Non-dimensional Correction
-- peak_analysis_tool.py: v3.3 (双滤波增强版)
+- peak_analysis_tool.py: v3.4 (自动加载优化版)
 
 ### 更新日志
+
+#### v3.4 (2026-02-09)
+- **优化**: 数据加载流程改进
+  - 选择流体类型后自动加载第一个速度的数据
+  - 无需手动点击速度下拉框即可查看数据
+  - 提升单速度场景下的用户体验
 
 #### v3.3 (2026-02-06)
 - **修复**: 批量导出对比数据时X轴范围截断问题

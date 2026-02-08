@@ -317,8 +317,8 @@ class PeakAnalysisTool(QMainWindow):
         # 无量纲曲线图的顶部坐标轴引用
         self.ax_dimensionless_top = None
 
-        # 对比曲线存储列表
-        self.compare_curves = []  # 存储格式: [{"label": str, "t_rho": array, "F_star": array}, ...]
+        # 对比曲线存储列表（增强版：包含完整元数据和缓存数据）
+        self.compare_curves = []  # 存储格式: [{"label": str, "t_rho": array, "t_gamma": array, "F_star": array, "visible": bool, "metadata": dict, "cached_data": dict}, ...]
 
         # 文件夹选择相关变量
         self.data_folder = ""           # 数据文件夹路径
@@ -877,6 +877,11 @@ class PeakAnalysisTool(QMainWindow):
         peak_instruction.setWordWrap(True)
         manual_layout.addWidget(peak_instruction)
 
+        # 导出峰值按钮
+        self.export_peaks_btn = QPushButton("导出峰值")
+        self.export_peaks_btn.clicked.connect(self.export_peaks_callback)
+        manual_layout.addWidget(self.export_peaks_btn)
+
         manual_group.setLayout(manual_layout)
         right_layout.addWidget(manual_group)
 
@@ -950,7 +955,7 @@ class PeakAnalysisTool(QMainWindow):
         btn_row.setSpacing(6)
         self.add_compare_btn = QPushButton("添加")
         self.add_compare_btn.clicked.connect(self.add_to_compare)
-        self.export_compare_btn = QPushButton("导出")
+        self.export_compare_btn = QPushButton("导出对比数据（8个Sheet）")
         self.export_compare_btn.clicked.connect(self.export_compare_data)
         self.clear_compare_btn = QPushButton("清空")
         self.clear_compare_btn.clicked.connect(self.clear_compare)
@@ -981,25 +986,6 @@ class PeakAnalysisTool(QMainWindow):
 
         compare_group.setLayout(compare_layout)
         right_layout.addWidget(compare_group)
-
-        # ========== 操作按钮区域 ==========
-        buttons_group = QGroupBox("操作")
-        buttons_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        buttons_layout = QGridLayout()
-        buttons_layout.setHorizontalSpacing(8)
-        buttons_layout.setVerticalSpacing(6)
-        buttons_layout.setContentsMargins(8, 10, 8, 10)
-
-        self.export_all_btn = QPushButton("导出数据")
-        self.export_all_btn.clicked.connect(self.export_all_data)
-        self.export_peaks_btn = QPushButton("导出峰值")
-        self.export_peaks_btn.clicked.connect(self.export_peaks_callback)
-
-        buttons_layout.addWidget(self.export_all_btn, 0, 0, 1, 2)
-        buttons_layout.addWidget(self.export_peaks_btn, 1, 0, 1, 2)
-
-        buttons_group.setLayout(buttons_layout)
-        right_layout.addWidget(buttons_group)
 
         # 添加弹性空间，确保内容在顶部对齐
         right_layout.addStretch(1)
@@ -1130,7 +1116,15 @@ class PeakAnalysisTool(QMainWindow):
             self.next_btn.setEnabled(False)
             self.file_info_label.setText("")
 
-            self.statusBar().showMessage(f"已选择流体类型: {fluid_type}，请选择速度")
+            # 自动选择并加载第一个速度
+            if len(velocities) > 0:
+                # 设置下拉框选中第一个速度
+                self.velocity_select_combo.setCurrentIndex(0)
+                # 直接调用速度变化处理函数，确保数据被加载
+                self.on_velocity_changed(velocities[0])
+                self.statusBar().showMessage(f"已选择流体类型: {fluid_type}，自动加载速度: {velocities[0]}")
+            else:
+                self.statusBar().showMessage(f"已选择流体类型: {fluid_type}，但没有可用的速度数据")
 
         except Exception as e:
             print(f"流体类型变化处理出错: {e}")
@@ -1639,6 +1633,170 @@ class PeakAnalysisTool(QMainWindow):
         F_final = F_rel_base - delta_F_user
 
         return t_final, F_final
+
+    # ========== 数据重构引擎（用于导出功能）==========
+    def reconstruct_curve_data(self, curve_dict):
+        """
+        从存储的元数据和缓存数据重构完整的曲线数据
+
+        参数:
+            curve_dict: 包含metadata和cached_data的曲线字典
+
+        返回:
+            包含6种数据类型的字典:
+            - dimensionless_trho_original: (t_rho, F_star) 无量纲t/τρ（滤波）
+            - dimensionless_tgamma_original: (t_gamma, F_star) 无量纲t/τγ（滤波）
+            - filtered_original: (t_smooth, F_smooth) 有量纲（滤波）
+            - unfiltered_original: (t_raw, F_raw) 有量纲（未滤波）
+            - dimensionless_trho_raw: (t_rho_raw, F_star_raw) 无量纲t/τρ（未滤波）
+            - dimensionless_tgamma_raw: (t_gamma_raw, F_star_raw) 无量纲t/τγ（未滤波）
+        """
+        try:
+            metadata = curve_dict["metadata"]
+            cached = curve_dict["cached_data"]
+
+            # 提取元数据
+            U0 = metadata["U0"]
+            D0 = metadata["D0"]
+            rho = metadata["rho"]
+            sigma = metadata["sigma"]
+
+            # 计算特征时间尺度
+            tau_rho = (rho * D0**3) / sigma  # 密度时间尺度
+            tau_gamma = np.sqrt((rho * D0**3) / sigma)  # 惯性-表面张力时间尺度
+
+            # 1. 滤波数据（已存储）
+            t_smooth = cached["t_smooth"]
+            F_smooth = cached["F_smooth"]
+
+            # 2. 未滤波数据（已存储）
+            t_raw = cached["t_raw"]
+            F_raw = cached["F_raw"]
+
+            # 3. 无量纲数据（滤波）- 直接使用已存储的
+            t_rho = curve_dict["t_rho"]
+            t_gamma = curve_dict["t_gamma"]
+            F_star = curve_dict["F_star"]
+
+            # 4. 无量纲数据（未滤波）- 需要重新计算
+            # 计算未滤波的无量纲力
+            F_star_raw = F_raw / (sigma * D0)
+
+            # 计算未滤波的无量纲时间
+            t_rho_raw = t_raw / tau_rho
+            t_gamma_raw = t_raw / tau_gamma
+
+            return {
+                "dimensionless_trho_original": (t_rho, F_star),
+                "dimensionless_tgamma_original": (t_gamma, F_star),
+                "filtered_original": (t_smooth, F_smooth),
+                "unfiltered_original": (t_raw, F_raw),
+                "dimensionless_trho_raw": (t_rho_raw, F_star_raw),
+                "dimensionless_tgamma_raw": (t_gamma_raw, F_star_raw)
+            }
+
+        except Exception as e:
+            print(f"重构曲线数据时出错: {e}")
+            traceback.print_exc()
+            return None
+
+    def calculate_unified_ranges(self, curves_data_list, data_type='dimensional'):
+        """
+        计算统一的X轴范围
+
+        参数:
+            curves_data_list: 多条曲线的 (x, y) 数据列表
+            data_type: 'dimensionless' 使用并集，'dimensional' 使用交集
+
+        返回:
+            (x_min, x_max, num_points) 统一的X轴范围参数
+        """
+        if not curves_data_list:
+            return None
+
+        x_mins = []
+        x_maxs = []
+        densities = []
+
+        for x_data, y_data in curves_data_list:
+            if len(x_data) > 0:
+                x_mins.append(np.min(x_data))
+                x_maxs.append(np.max(x_data))
+                # 计算数据密度（点数/范围）
+                x_range = np.max(x_data) - np.min(x_data)
+                if x_range > 0:
+                    densities.append(len(x_data) / x_range)
+
+        if not x_mins or not x_maxs:
+            return None
+
+        # 根据数据类型选择并集或交集
+        if data_type == 'dimensionless':
+            # 无量纲数据：使用并集（最小起点到最大终点）
+            x_min = min(x_mins)
+            x_max = max(x_maxs)
+        else:
+            # 有量纲数据：使用交集（最大起点到最小终点）
+            x_min = max(x_mins)
+            x_max = min(x_maxs)
+
+        # 检查交集是否有效
+        if x_min >= x_max:
+            print(f"警告: {data_type} 数据的X轴范围无效 (x_min={x_min}, x_max={x_max})")
+            return None
+
+        # 基于最密集曲线的密度计算点数
+        if densities:
+            max_density = max(densities)
+            num_points = int((x_max - x_min) * max_density)
+            # 限制点数范围
+            num_points = max(100, min(num_points, 50000))
+        else:
+            num_points = 1000
+
+        return x_min, x_max, num_points
+
+    def interpolate_to_unified_axis(self, curves_data_list, x_unified):
+        """
+        将多条曲线插值到统一的X轴
+
+        参数:
+            curves_data_list: 多条曲线的 (x, y) 数据列表
+            x_unified: 统一的X轴数组
+
+        返回:
+            插值后的Y值列表，超出范围的点填充NaN
+        """
+        interpolated_curves = []
+
+        for x_data, y_data in curves_data_list:
+            if len(x_data) == 0 or len(y_data) == 0:
+                # 空数据，填充全NaN
+                interpolated_curves.append(np.full_like(x_unified, np.nan))
+                continue
+
+            try:
+                # 使用scipy或numpy进行插值
+                if SCIPY_AVAILABLE:
+                    # scipy的interp1d，超出范围填充NaN
+                    f = interp1d(x_data, y_data, kind='linear',
+                                bounds_error=False, fill_value=np.nan)
+                    y_interp = f(x_unified)
+                else:
+                    # numpy的interp，手动处理边界
+                    y_interp = np.interp(x_unified, x_data, y_data)
+                    # 标记超出范围的点为NaN
+                    x_min, x_max = np.min(x_data), np.max(x_data)
+                    mask = (x_unified < x_min) | (x_unified > x_max)
+                    y_interp[mask] = np.nan
+
+                interpolated_curves.append(y_interp)
+
+            except Exception as e:
+                print(f"插值时出错: {e}")
+                interpolated_curves.append(np.full_like(x_unified, np.nan))
+
+        return interpolated_curves
 
     def mark_manual_peaks(self, t_raw, F_raw, t_smooth, F_smooth):
         """标记手动峰值"""
@@ -2371,7 +2529,7 @@ class PeakAnalysisTool(QMainWindow):
 
     # ========== 曲线对比功能 ==========
     def add_to_compare(self):
-        """将当前标定曲线添加到对比图"""
+        """将当前标定曲线添加到对比图（增强版：存储完整元数据和缓存数据）"""
         if self.calib_data is None:
             QMessageBox.warning(self, "警告", "请先完成曲线标定")
             return
@@ -2379,12 +2537,45 @@ class PeakAnalysisTool(QMainWindow):
         # 生成图例标签：流体类型_直径_速度_序号
         label = f"{self.current_fluid_type}_{self.D0}_{self.U0}_{len(self.compare_curves)+1}"
 
-        # 存储曲线数据（包含visible字段）
+        # 获取当前流体参数
+        try:
+            rho = float(self.rho_edit.text())
+            sigma = float(self.sigma_edit_fluid.text())
+        except ValueError:
+            QMessageBox.warning(self, "警告", "流体参数无效")
+            return
+
+        # 存储曲线数据（包含完整元数据和缓存数据）
         self.compare_curves.append({
             "label": label,
             "t_rho": self.calib_data.t_rho.copy(),
+            "t_gamma": self.calib_data.t_gamma.copy(),
             "F_star": self.calib_data.F_star.copy(),
-            "visible": True
+            "visible": True,
+            "metadata": {
+                "file_path": self.current_file_path,
+                "U0": self.U0,
+                "D0": self.D0,
+                "rho": rho,
+                "sigma": sigma,
+                "T0": self.peak_info.T0,
+                "V0": self.peak_info.V0,
+                "delta_t_user": self.delta_t_user,
+                "delta_F_user": self.delta_F_user,
+                "filter_type": self.filter_type,
+                "fir_fc": self.params.FIR_FC,
+                "sigma_gauss": self.params.SIGMA,
+                "COEFF_A": self.params.COEFF_A,
+                "PRE_TIME": self.params.PRE_TIME,
+                "POST_TIME": self.params.POST_TIME,
+                "STEP": self.params.STEP
+            },
+            "cached_data": {
+                "t_raw": self.calib_data.t_raw.copy(),
+                "F_raw": self.calib_data.F_raw.copy(),
+                "t_smooth": self.calib_data.t_smooth.copy(),
+                "F_smooth": self.calib_data.F_smooth.copy()
+            }
         })
 
         # 更新曲线列表UI、对比图和计数标签
@@ -2507,9 +2698,15 @@ class PeakAnalysisTool(QMainWindow):
             self.statusBar().showMessage(f"已删除曲线: {removed_label}")
 
     def export_compare_data(self):
-        """导出对比图数据到Excel"""
+        """导出对比图数据到Excel（增强版：8个Sheet）"""
         if not self.compare_curves:
-            QMessageBox.warning(self, "警告", "对比图中没有曲线数据")
+            QMessageBox.warning(self, "警告",
+                              "对比图中没有曲线数据\n\n"
+                              "操作步骤：\n"
+                              "1. 加载并标定曲线\n"
+                              "2. 点击「添加到对比」按钮\n"
+                              "3. 重复步骤1-2添加更多曲线\n"
+                              "4. 点击「导出」按钮")
             return
 
         if not OPENPYXL_AVAILABLE:
@@ -2518,80 +2715,178 @@ class PeakAnalysisTool(QMainWindow):
 
         # 选择保存路径
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "导出对比数据",
-            os.path.join(self.data_folder or "", "compare_data.xlsx") if self.data_folder else "compare_data.xlsx",
+            self, "导出对比数据（8个Sheet）",
+            os.path.join(self.data_folder or "", "compare_data_8sheets.xlsx") if self.data_folder else "compare_data_8sheets.xlsx",
             "Excel文件 (*.xlsx)"
         )
         if not file_path:
             return
 
         try:
+            # 重构所有曲线的数据
+            all_curves_data = []
+            for curve in self.compare_curves:
+                reconstructed = self.reconstruct_curve_data(curve)
+                if reconstructed is None:
+                    QMessageBox.critical(self, "错误", f"重构曲线数据失败: {curve['label']}")
+                    return
+                all_curves_data.append({
+                    "label": curve["label"],
+                    "data": reconstructed
+                })
+
             workbook = Workbook()
+            # 删除默认的Sheet
+            if "Sheet" in workbook.sheetnames:
+                del workbook["Sheet"]
 
-            # Sheet 1: 原始数据（不插值）
-            ws1 = workbook.active
-            ws1.title = "原始数据"
+            # Sheet 1: t/τρ原始数据（无量纲，滤波）
+            self._export_sheet_original(
+                workbook, "1_t_τρ原始数据",
+                all_curves_data, "dimensionless_trho_original",
+                "t/τρ", "F*"
+            )
 
-            # 构建表头：每条曲线两列
-            header1 = []
-            for curve in self.compare_curves:
-                header1.extend([f"t/τρ_{curve['label']}", f"F*_{curve['label']}"])
-            ws1.append(header1)
+            # Sheet 2: t/τρ插值对齐数据（无量纲，滤波）
+            self._export_sheet_interpolated(
+                workbook, "2_t_τρ插值对齐",
+                all_curves_data, "dimensionless_trho_original",
+                "t/τρ", "dimensionless"
+            )
 
-            # 找出最长的曲线
-            max_len = max(len(curve["t_rho"]) for curve in self.compare_curves)
+            # Sheet 3: t/τγ原始数据（无量纲，滤波）
+            self._export_sheet_original(
+                workbook, "3_t_τγ原始数据",
+                all_curves_data, "dimensionless_tgamma_original",
+                "t/τγ", "F*"
+            )
 
-            # 写入数据
-            for i in range(max_len):
-                row = []
-                for curve in self.compare_curves:
-                    if i < len(curve["t_rho"]):
-                        row.extend([curve["t_rho"][i], curve["F_star"][i]])
-                    else:
-                        row.extend(["", ""])
-                ws1.append(row)
+            # Sheet 4: t/τγ插值对齐数据（无量纲，滤波）
+            self._export_sheet_interpolated(
+                workbook, "4_t_τγ插值对齐",
+                all_curves_data, "dimensionless_tgamma_original",
+                "t/τγ", "dimensionless"
+            )
 
-            # Sheet 2: 插值对齐数据
-            ws2 = workbook.create_sheet("插值对齐数据")
+            # Sheet 5: 滤波后原始数据（有量纲）
+            self._export_sheet_original(
+                workbook, "5_滤波后原始数据",
+                all_curves_data, "filtered_original",
+                "t (s)", "F (N)"
+            )
 
-            # 找出完整时间范围（并集而非交集）
-            t_min = min(curve["t_rho"].min() for curve in self.compare_curves)  # 取最小的最小值
-            t_max = max(curve["t_rho"].max() for curve in self.compare_curves)  # 取最大的最大值
+            # Sheet 6: 滤波后插值对齐数据（有量纲）
+            self._export_sheet_interpolated(
+                workbook, "6_滤波后插值对齐",
+                all_curves_data, "filtered_original",
+                "t (s)", "dimensional"
+            )
 
-            # 生成统一时间轴
-            # 计算合适的点数：基于最密集曲线的密度
-            densities = [(len(curve["t_rho"]) - 1) / (curve["t_rho"].max() - curve["t_rho"].min())
-                         for curve in self.compare_curves]
-            max_density = max(densities)
-            num_points = int((t_max - t_min) * max_density) + 1
-            common_t = np.linspace(t_min, t_max, num_points)
+            # Sheet 7: 未滤波原始数据（有量纲）
+            self._export_sheet_original(
+                workbook, "7_未滤波原始数据",
+                all_curves_data, "unfiltered_original",
+                "t (s)", "F (N)"
+            )
 
-            # 构建表头
-            header2 = ["t/τρ"] + [f"F*_{curve['label']}" for curve in self.compare_curves]
-            ws2.append(header2)
-
-            # 对每条曲线进行线性插值
-            interpolated_data = []
-            for curve in self.compare_curves:
-                if SCIPY_AVAILABLE:
-                    interp_func = interp1d(curve["t_rho"], curve["F_star"],
-                                          kind='linear', bounds_error=False, fill_value=np.nan)
-                    interpolated_data.append(interp_func(common_t))
-                else:
-                    # 使用numpy插值
-                    interpolated_data.append(np.interp(common_t, curve["t_rho"], curve["F_star"]))
-
-            # 写入数据
-            for i, t in enumerate(common_t):
-                row = [t] + [data[i] if not np.isnan(data[i]) else "" for data in interpolated_data]
-                ws2.append(row)
+            # Sheet 8: 未滤波插值对齐数据（有量纲）
+            self._export_sheet_interpolated(
+                workbook, "8_未滤波插值对齐",
+                all_curves_data, "unfiltered_original",
+                "t (s)", "dimensional"
+            )
 
             workbook.save(file_path)
-            self.statusBar().showMessage(f"已导出对比数据: {file_path}")
-            QMessageBox.information(self, "成功", f"对比数据已导出到:\n{file_path}")
+            self.statusBar().showMessage(f"已导出对比数据（8个Sheet）: {file_path}")
+            QMessageBox.information(self, "成功",
+                                  f"对比数据已导出到:\n{file_path}\n\n"
+                                  f"包含8个Sheet:\n"
+                                  f"1. t/τρ原始数据（无量纲，滤波）\n"
+                                  f"2. t/τρ插值对齐（并集范围）\n"
+                                  f"3. t/τγ原始数据（无量纲，滤波）\n"
+                                  f"4. t/τγ插值对齐（并集范围）\n"
+                                  f"5. 滤波后原始数据（有量纲）\n"
+                                  f"6. 滤波后插值对齐（交集范围）\n"
+                                  f"7. 未滤波原始数据（有量纲）\n"
+                                  f"8. 未滤波插值对齐（交集范围）")
 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"导出失败:\n{str(e)}")
+            QMessageBox.critical(self, "错误", f"导出失败:\n{str(e)}\n\n{traceback.format_exc()}")
+
+    def _export_sheet_original(self, workbook, sheet_name, all_curves_data, data_key, x_label, y_label):
+        """
+        导出原始数据（不插值）
+
+        表格格式：| X_curve1 | Y_curve1 | X_curve2 | Y_curve2 | ...
+        """
+        ws = workbook.create_sheet(sheet_name)
+
+        # 构建表头：每条曲线两列
+        header = []
+        for curve_info in all_curves_data:
+            label = curve_info["label"]
+            header.extend([f"{x_label}_{label}", f"{y_label}_{label}"])
+        ws.append(header)
+
+        # 找出最长的曲线
+        max_len = 0
+        for curve_info in all_curves_data:
+            x_data, y_data = curve_info["data"][data_key]
+            max_len = max(max_len, len(x_data))
+
+        # 写入数据
+        for i in range(max_len):
+            row = []
+            for curve_info in all_curves_data:
+                x_data, y_data = curve_info["data"][data_key]
+                if i < len(x_data):
+                    row.extend([x_data[i], y_data[i]])
+                else:
+                    row.extend(["", ""])
+            ws.append(row)
+
+    def _export_sheet_interpolated(self, workbook, sheet_name, all_curves_data, data_key, x_label, data_type):
+        """
+        导出插值对齐数据
+
+        表格格式：| X_unified | Y_curve1 | Y_curve2 | Y_curve3 | ...
+        data_type: 'dimensionless' 使用并集，'dimensional' 使用交集
+        """
+        ws = workbook.create_sheet(sheet_name)
+
+        # 提取所有曲线的数据
+        curves_data_list = []
+        for curve_info in all_curves_data:
+            x_data, y_data = curve_info["data"][data_key]
+            curves_data_list.append((x_data, y_data))
+
+        # 计算统一的X轴范围
+        range_params = self.calculate_unified_ranges(curves_data_list, data_type)
+        if range_params is None:
+            # 范围无效，写入警告信息
+            ws.append([f"警告: {data_type} 数据的X轴范围无效，无法生成插值对齐数据"])
+            return
+
+        x_min, x_max, num_points = range_params
+        x_unified = np.linspace(x_min, x_max, num_points)
+
+        # 插值到统一X轴
+        interpolated_curves = self.interpolate_to_unified_axis(curves_data_list, x_unified)
+
+        # 构建表头（根据数据类型判断使用F*还是F）
+        if data_key.startswith("dimensionless"):
+            # 无量纲数据使用F*
+            header = [x_label] + [f"F*_{curve_info['label']}" for curve_info in all_curves_data]
+        else:
+            # 有量纲数据使用F
+            header = [x_label] + [f"F_{curve_info['label']}" for curve_info in all_curves_data]
+        ws.append(header)
+
+        # 写入数据
+        for i, x in enumerate(x_unified):
+            row = [x] + [y_interp[i] if not np.isnan(y_interp[i]) else ""
+                        for y_interp in interpolated_curves]
+            ws.append(row)
 
 
 # ========== 主程序 ==========
